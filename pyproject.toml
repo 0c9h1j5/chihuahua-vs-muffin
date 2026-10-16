@@ -8,6 +8,9 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "streamlit>=1.66.0",
     "torch>=2.14.1",
     "torchvision>=0.29.1",
 ]

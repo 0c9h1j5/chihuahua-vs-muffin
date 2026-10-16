@@ -25,7 +25,13 @@ desktop.ini
 .DS_Store
 
 # Data / model outputs
+# ImageFolder dataset roots used by 1016.py (./archive/train, ./archive/test)
 data/
 archive/
+archive/train/
+archive/test/
 *.pt
 *.pth
+
+# Ignore this file itself (keep local only)
+.gitignore
