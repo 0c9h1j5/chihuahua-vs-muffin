@@ -1,14 +1,13 @@
-import re
 import time
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # [수정3] F.relu 쓰려면 필요
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
+from torchvision.transforms import v2
 
 transform = transforms.Compose(
     [
@@ -18,25 +17,37 @@ transform = transforms.Compose(
     ]
 )
 
+# 학습용: 사진을 불러올 때마다 랜덤으로 변형 (온라인 증강). val/test는 위 transform
+train_transform = v2.Compose(
+    [
+        v2.ToImage(),
+        v2.RandomHorizontalFlip(),  # 좌우 반전
+        v2.RandomRotation(25),  # ±25도 회전
+        v2.RandomGrayscale(p=0.1),  # 10% 확률로 흑백
+        v2.RandomAdjustSharpness(2, p=0.5),  # 50% 확률로 샤프닝
+        v2.ToDtype(torch.float32, scale=True),
+        v2.GaussianNoise(sigma=0.05),  # 노이즈 (0~1 텐서로 바꾼 뒤에 적용)
+        v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ]
+)
+
 batch_size = 32
 
-trainset = torchvision.datasets.ImageFolder(
-    root="./archive/train_224", transform=transform
-)
-trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=batch_size, shuffle=True, num_workers=0
-)
-
-testset = torchvision.datasets.ImageFolder(
-    root="./archive/test_224", transform=transform
-)
-testloader = torch.utils.data.DataLoader(
-    testset, batch_size=batch_size, shuffle=False, num_workers=0
-)
+# 사진 불러오기 + 증강을 CPU 여러 개로 나눠서 함 (GPU가 계산하는 동안 다음 배치 준비)
+num_workers = 4
 
 
-classes = trainset.classes  # [수정2] 폴더 이름 = 클래스
-print(len(trainset), classes, len(testset))
+def make_loader(root, tf, shuffle, workers):
+    dataset = torchvision.datasets.ImageFolder(root=root, transform=tf)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=workers,
+        persistent_workers=True,  # 에폭마다 worker를 새로 띄우지 않음
+        pin_memory=True,  # GPU로 옮기는 속도 향상
+    )
+    return dataset, loader
 
 
 def imshow(img):
@@ -46,161 +57,153 @@ def imshow(img):
     plt.show()
 
 
+def conv_block(in_ch, out_ch):
+    """(3x3 conv -> BatchNorm -> ReLU) x 2 -> 2x2 pool (크기 절반)"""
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1),
+        nn.BatchNorm2d(out_ch),  # 층마다 값 분포를 맞춰 학습을 빠르고 안정적으로
+        nn.ReLU(),
+        # 같은 크기에서 conv를 한 번 더: 줄이기 전에 특징을 한 번 더 뽑음 (VGG 방식)
+        nn.Conv2d(out_ch, out_ch, 3, padding=1),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU(),
+        nn.MaxPool2d(2, 2),
+    )
+
+
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 53 * 53, 120)  # [수정5] 224 입력 기준 계산
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, len(classes))
+        # 채널을 늘림: 3 -> 32 -> 64 -> 128 -> 256, 크기 224 -> 112 -> 56 -> 28 -> 14
+        self.features = nn.Sequential(
+            conv_block(3, 32),
+            conv_block(32, 64),
+            conv_block(64, 128),
+            conv_block(128, 256),
+        )
+        # flatten 대신 채널별 평균 (256x14x14 -> 256) : fc 파라미터가 크게 줄어듦
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),  # 학습 때 일부 뉴런을 랜덤으로 꺼서 과적합 방지
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes),
+        )
 
-    def forward(self, x):  # [수정4] 들여쓰기: __init__ 밖으로
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("device:", device)
-
-net = Net().to(device)
-
-
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-
-# [수정11] 표준 로그: 설정 헤더 + 직전 실행 대비 변경점을 result.log에 기록
-PATH = "./yes_no_net.pth"
-LOG_PATH = "./result.log"
-RESIZE = "224x224"  # augment.py에서 미리 축소 (transform에 Resize 없음)
-
-# 헤더 값은 위 옵티마이저/에폭 루프의 리터럴 설정과 일치해야 함
-SETTINGS = {
-    "batch_size": f"{batch_size}",
-    "lr": "0.001",
-    "momentum": "0.9",
-    "epochs": "10",
-    "device": f"{device}",
-    "resize": RESIZE,
-    "train_root": f"{trainset.root}",
-    "test_root": f"{testset.root}",
-    "checkpoint": PATH,
-}
-
-PREV_PATTERNS = {
-    "batch_size": r"batch_size\s*=\s*(\S+)",
-    "lr": r"\blr\s*=\s*(\S+)",
-    "momentum": r"momentum\s*=\s*(\S+)",
-    "epochs": r"\bepochs\s*=\s*(\S+)",
-    "device": r"\bdevice\s*=\s*(\S+)",
-    "resize": r"\bresize\s*=\s*(\S+)",
-    "train_root": r"train_root\s*=\s*(\S+)",
-    "test_root": r"test_root\s*=\s*(\S+)",
-    "checkpoint": r"checkpoint\s*=\s*(\S+)",
-}
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(self.gap(x), 1)
+        return self.classifier(x)
 
 
-def read_prev_settings(path):
-    """Best-effort: 직전 실행 로그의 설정 헤더를 파싱한다."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read()
-    except OSError:
-        return {}
-    return {
-        k: m.group(1) for k, p in PREV_PATTERNS.items() if (m := re.search(p, text))
-    }
+def autocast(device):
+    """혼합 정밀도(AMP): GPU에서 무거운 계산(conv, 행렬곱)을 float16으로.
+    loss, BatchNorm 등 정밀도가 중요한 계산은 PyTorch가 알아서 float32로 둔다."""
+    return torch.autocast(
+        device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"
+    )
 
 
-prev = read_prev_settings(LOG_PATH)  # 덮어쓰기 전에 반드시 먼저 읽어야 함
-log_file = open(LOG_PATH, "w", encoding="utf-8")
+def evaluate(net, loader, device):
+    """loader 전체에 대한 (맞춘 개수, 전체 개수)를 돌려준다."""
+    net.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            with autocast(device):
+                outputs = net(images)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    return correct, total
 
 
-def log_line(text):
-    log_file.write(f"{text}\n")
-    log_file.flush()
+def main():
+    # 원본만 224로 줄인 폴더 (복사본 없음, val_224와 같은 나눔)
+    trainset, trainloader = make_loader(
+        "./archive/train_224_orig", train_transform, True, num_workers
+    )
+    # 검증셋: 에폭별 성능 확인 + 가장 좋은 모델 고르기용 (test는 마지막에 한 번만)
+    valset, valloader = make_loader("./archive/val_224", transform, False, 2)
+    testset, testloader = make_loader("./archive/test_224", transform, False, 2)
 
+    classes = trainset.classes  # [수정2] 폴더 이름 = 클래스
+    print(f"train {len(trainset)} / val {len(valset)} / test {len(testset)}", classes)
 
-log_line(f"batch_size = {SETTINGS['batch_size']}")
-log_line(f"lr={SETTINGS['lr']}")
-log_line(f"momentum = {SETTINGS['momentum']}")
-log_line(f"epochs = {SETTINGS['epochs']}")
-log_line(f"device = {SETTINGS['device']}")
-log_line(f"resize = {SETTINGS['resize']}")
-log_line(f"train_root = {SETTINGS['train_root']}")
-log_line(f"test_root = {SETTINGS['test_root']}")
-log_line(f"checkpoint = {SETTINGS['checkpoint']}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("device:", device)
 
-changed = [
-    f"{k}: {prev[k]} -> {SETTINGS[k]}"
-    for k in SETTINGS
-    if prev.get(k) is not None and prev[k] != SETTINGS[k]
-]
-if changed:
-    log_line("# changes vs previous run")
-    for line in changed:
-        log_line(line)
-else:
-    log_line("# changes vs previous run: none (첫 실행 또는 동일 설정)")
+    net = Net(len(classes)).to(device)
 
-start_time = time.time()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
+    # 80에폭은 너무 오래 걸려서 절반으로 (스케줄러도 40에폭에 맞춰 줄어듦)
+    num_epochs = 40
+    # 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
-for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑
-    net.train()
-    running_loss = 0.0
-    for data in trainloader:
-        inputs, labels = data[0].to(device), data[1].to(device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    avg_loss = running_loss / len(trainloader)
-    print(f"[epoch {epoch + 1}] loss: {avg_loss:.3f}")
-    log_line(f"[epoch {epoch + 1}] loss: {avg_loss:.3f}")
+    # float16은 아주 작은 기울기가 0이 되기 쉬워서, loss를 키워서 계산한 뒤 되돌림
+    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
+    PATH = "./yes_no_net.pth"
+    best_val_acc = 0.0
+    start_time = time.time()
 
-finish_time = time.time()
+    for epoch in range(num_epochs):
+        net.train()
+        running_loss = 0.0
+        for data in trainloader:
+            inputs, labels = data[0].to(device), data[1].to(device)
+            optimizer.zero_grad()
+            with autocast(device):
+                outputs = net(inputs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            running_loss += loss.item()
+        scheduler.step()
+        val_correct, val_total = evaluate(net, valloader, device)
+        val_acc = 100 * val_correct / val_total
+        msg = f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}"
+        print(f"{msg}  val acc: {val_acc:.1f} %  ({time.time() - start_time:.0f}s)")
+        if val_acc > best_val_acc:  # 검증 정확도가 가장 좋은 모델만 저장
+            best_val_acc = val_acc
+            torch.save(net.state_dict(), PATH)
 
-print("Finished Training", finish_time - start_time)
-log_line(f"Finished Training {finish_time - start_time}")
+    finish_time = time.time()
 
+    print("Finished Training", finish_time - start_time)
+    print(f"Best val accuracy: {best_val_acc:.1f} %")
 
-torch.save(net.state_dict(), PATH)
+    net.load_state_dict(torch.load(PATH))  # 가장 좋았던 모델로 테스트
 
-dataiter = iter(testloader)
-images, labels = next(dataiter)
-imshow(torchvision.utils.make_grid(images))
-print("GroundTruth: ", " ".join(f"{classes[labels[j]]:5s}" for j in range(batch_size)))
+    dataiter = iter(testloader)
+    images, labels = next(dataiter)
+    imshow(torchvision.utils.make_grid(images))
+    print(
+        "GroundTruth: ", " ".join(f"{classes[labels[j]]:5s}" for j in range(batch_size))
+    )
 
-
-# [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
-net.eval()
-with torch.no_grad():
-    outputs = net(images.to(device))
-    _, predicted = torch.max(outputs, 1)
-print(
-    "Predicted:   ", " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size))
-)
-
-correct = 0
-total = 0
-with torch.no_grad():
-    for images, labels in testloader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = net(images)
+    # [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
+    net.eval()
+    with torch.no_grad(), autocast(device):
+        outputs = net(images.to(device))
         _, predicted = torch.max(outputs, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
-log_line(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
+    print(
+        "Predicted:   ",
+        " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size)),
+    )
 
-log_file.close()
+    correct, total = evaluate(net, testloader, device)
+    print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
+
+
+# Windows에서 num_workers를 쓰면 worker들이 이 파일을 다시 import 하므로,
+# 학습 코드는 직접 실행할 때만 돌도록 막아 둠
+if __name__ == "__main__":
+    main()
