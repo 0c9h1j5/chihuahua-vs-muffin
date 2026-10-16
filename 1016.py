@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # [수정3] F.relu 쓰려면 필요
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
@@ -67,26 +66,40 @@ def imshow(img):
     plt.show()
 
 
+def conv_block(in_ch, out_ch):
+    """3x3 conv -> BatchNorm -> ReLU -> 2x2 pool (크기 절반)"""
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1),
+        nn.BatchNorm2d(out_ch),  # 층마다 값 분포를 맞춰 학습을 빠르고 안정적으로
+        nn.ReLU(),
+        nn.MaxPool2d(2, 2),
+    )
+
+
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.conv3 = nn.Conv2d(16, 32, 3)
-        self.fc1 = nn.Linear(32 * 25 * 25, 120)  # [수정5] 224 입력 기준 계산
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, len(classes))
+        # 채널을 늘림: 3 -> 32 -> 64 -> 128 -> 256, 크기 224 -> 112 -> 56 -> 28 -> 14
+        self.features = nn.Sequential(
+            conv_block(3, 32),
+            conv_block(32, 64),
+            conv_block(64, 128),
+            conv_block(128, 256),
+        )
+        # flatten 대신 채널별 평균 (256x14x14 -> 256) : fc 파라미터가 크게 줄어듦
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),  # 학습 때 일부 뉴런을 랜덤으로 꺼서 과적합 방지
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, len(classes)),
+        )
 
-    def forward(self, x):  # [수정4] 들여쓰기: __init__ 밖으로
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(self.gap(x), 1)
+        return self.classifier(x)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -113,13 +126,16 @@ def evaluate(loader):
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
+num_epochs = 80  # 6차는 40에폭에서도 검증 정확도가 계속 올라서 2배로
+# 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+
 PATH = "./yes_no_net.pth"
 best_val_acc = 0.0
 start_time = time.time()
 
 
-# 한 에폭이 4배 복사본(16,092장) 대신 원본(4,023장)이라, 같은 양을 보도록 40에폭
-for epoch in range(40):
+for epoch in range(num_epochs):
     net.train()
     running_loss = 0.0
     for data in trainloader:
@@ -130,6 +146,7 @@ for epoch in range(40):
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
+    scheduler.step()
     val_correct, val_total = evaluate(valloader)
     val_acc = 100 * val_correct / val_total
     msg = f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}"

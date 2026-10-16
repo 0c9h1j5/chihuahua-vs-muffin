@@ -3,6 +3,7 @@
 ## 개요
 
 치와와 머핀 구분해보기
+DATASET : https://www.kaggle.com/datasets/samuelcortinhas/muffin-vs-chihuahua-image-classification?resource=download-directory
 
 ## 1차 시도
 
@@ -92,8 +93,32 @@ Test accuracy: 90.8 %  (1075/1184)
 ### 특이사항
 
 - 미리 만든 복사본(회전/샤프/노이즈) 대신 온라인 증강으로 변경: 사진을 불러올 때마다 랜덤 변형
-  - 좌우 반전, ±25도 회전, 10% 흑백, 50% 샤프닝, 가우시안 노이즈 (학습셋에만 적용, val/test는 그대로)
+- 좌우 반전, ±25도 회전, 10% 흑백, 50% 샤프닝, 가우시안 노이즈 (학습셋에만 적용, val/test는 그대로)
 - 학습 폴더는 원본만 224로 줄인 train_224_orig (4·5차와 같은 train/val 나눔)
 - 한 에폭이 4,023장이라 같은 양을 보도록 10 → 40에폭
 - 증강 CPU 비용은 사진당 약 3.5ms로 크지 않음
 - 과적합이 사라짐: 학습 loss가 0.23에서 멈춰 있고 검증 정확도는 마지막 에폭(89.6%)까지 계속 오름 → 에폭을 더 늘리면 더 오를 여지가 있음
+
+## 7차 시도
+
+batch_size = 32
+lr=0.001 (CosineAnnealingLR로 0까지 감소)
+epoch = 80
+
+sample: train 4023 / val 710 / test 1184 ['chihuahua', 'muffin']
+
+Finished Training 2081.4734132289886
+
+Best val accuracy: 92.7 % (65에폭)
+
+Test accuracy: 92.8 %  (1099/1184)
+
+### 특이사항
+
+- 모델 구조 변경 (파라미터 약 240만 → 42만 개)
+  - conv 블록 4개 (3x3 conv → BatchNorm → ReLU → MaxPool), 채널 32 → 64 → 128 → 256
+  - flatten 대신 AdaptiveAvgPool2d(1), 분류층에 Dropout(0.3)
+- 40 → 80에폭, CosineAnnealingLR로 학습률을 점점 줄임
+- 증강/데이터는 6차와 동일
+- 초반 10에폭은 검증 정확도가 60%대로 느리게 오르다가 20에폭 이후 빠르게 상승
+- 학습 시간이 약 35분으로 6차(12분)의 3배 가까이 걸림 (모델이 커지고 에폭이 2배)
