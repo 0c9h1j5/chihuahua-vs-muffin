@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environment
+.venv
+
+# Data / model outputs
+data/
+*.pt
+*.pth
