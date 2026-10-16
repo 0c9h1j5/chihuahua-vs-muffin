@@ -166,3 +166,28 @@ Test accuracy: 94.6 %  (1120/1184)
 - 배치당 145ms → 97ms, GPU 메모리 1.9GB → 1.1GB
 - 학습 시간 808초 → 538초 (약 1.5배 빨라짐)
 - 정확도는 떨어지지 않음 (테스트 93.8% → 94.6%, 랜덤 요소가 있어서 이 정도 차이는 실행마다 달라질 수 있음)
+
+## 10차 시도 (resnet.py)
+
+모델: ImageNet 사전학습 ResNet18 (전이학습)
+
+batch_size = 32
+lr=0.001 (CosineAnnealingLR로 0까지 감소), weight_decay=1e-4
+epoch = 10
+
+sample: train 4023 / val 710 / test 1184 ['chihuahua', 'muffin']
+
+Finished Training 94.19652771949768
+
+Best val accuracy: 99.0 % (3에폭)
+
+Test accuracy: 99.2 %  (1175/1184)
+
+### 특이사항
+
+- 별도 파일 resnet.py로 분리 (1016.py는 9차 직접 만든 CNN 그대로)
+- ImageNet(120만 장)으로 미리 학습된 ResNet18의 마지막 층만 1000 → 2클래스로 바꾸고 전체를 작은 학습률로 미세조정
+- 정규화를 ImageNet 평균/표준편차로 변경, 데이터/증강/검증셋/AMP/num_workers는 9차와 동일
+- 파라미터 1,120만 개로 9차(121만)보다 9배 크지만 에폭당 약 8초로 더 빠름 (첫 층에서 크기를 크게 줄임)
+- 1에폭 만에 검증 98.6%: 처음부터 학습한 CNN(9차 94.6%)과 차이가 큼
+- 테스트에서 틀린 사진 9장
