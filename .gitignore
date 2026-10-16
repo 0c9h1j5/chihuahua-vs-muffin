@@ -8,8 +8,24 @@ wheels/
 
 # Virtual environment
 .venv
+.env
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor / local settings (VS Code settings hold a machine-specific interpreter path)
+.vscode/
+.claude/settings.local.json
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
 
 # Data / model outputs
 data/
+archive/
 *.pt
 *.pth
