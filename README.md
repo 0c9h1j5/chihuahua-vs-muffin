@@ -122,3 +122,26 @@ Test accuracy: 92.8 %  (1099/1184)
 - 증강/데이터는 6차와 동일
 - 초반 10에폭은 검증 정확도가 60%대로 느리게 오르다가 20에폭 이후 빠르게 상승
 - 학습 시간이 약 35분으로 6차(12분)의 3배 가까이 걸림 (모델이 커지고 에폭이 2배)
+
+## 8차 시도
+
+batch_size = 32
+lr=0.001 (CosineAnnealingLR로 0까지 감소)
+epoch = 40
+
+sample: train 4023 / val 710 / test 1184 ['chihuahua', 'muffin']
+
+Finished Training 807.8887932300568
+
+Best val accuracy: 94.1 % (21에폭)
+
+Test accuracy: 93.8 %  (1110/1184)
+
+### 특이사항
+
+- 블록마다 conv를 2개로 (conv → BN → ReLU) x 2 → pool, VGG 방식 (파라미터 42만 → 121만 개)
+- 80에폭은 너무 오래 걸려서 40에폭으로 줄임
+- DataLoader num_workers=4 (+ persistent_workers, pin_memory)로 에폭당 약 26초 → 20초
+  - Windows에서 worker를 쓰려고 학습 코드를 main() 안으로 옮기고 `if __name__ == "__main__":`로 감쌈
+  - worker를 6개로 늘려도 같은 속도 → 이제 GPU 계산이 병목
+- 검증 정확도가 에폭마다 83~94%로 크게 흔들림 (검증셋이 710장이라 몇 장 차이로도 변동이 큼)

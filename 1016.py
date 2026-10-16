@@ -33,30 +33,21 @@ train_transform = v2.Compose(
 
 batch_size = 32
 
-# 원본만 224로 줄인 폴더 (복사본 없음, val_224와 같은 나눔)
-trainset = torchvision.datasets.ImageFolder(
-    root="./archive/train_224_orig", transform=train_transform
-)
-trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=batch_size, shuffle=True, num_workers=0
-)
-
-# 검증셋: 에폭별 성능 확인 + 가장 좋은 모델 고르기용 (test는 마지막에 한 번만)
-valset = torchvision.datasets.ImageFolder(root="./archive/val_224", transform=transform)
-valloader = torch.utils.data.DataLoader(
-    valset, batch_size=batch_size, shuffle=False, num_workers=0
-)
-
-testset = torchvision.datasets.ImageFolder(
-    root="./archive/test_224", transform=transform
-)
-testloader = torch.utils.data.DataLoader(
-    testset, batch_size=batch_size, shuffle=False, num_workers=0
-)
+# 사진 불러오기 + 증강을 CPU 여러 개로 나눠서 함 (GPU가 계산하는 동안 다음 배치 준비)
+num_workers = 4
 
 
-classes = trainset.classes  # [수정2] 폴더 이름 = 클래스
-print(f"train {len(trainset)} / val {len(valset)} / test {len(testset)}", classes)
+def make_loader(root, tf, shuffle, workers):
+    dataset = torchvision.datasets.ImageFolder(root=root, transform=tf)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=workers,
+        persistent_workers=True,  # 에폭마다 worker를 새로 띄우지 않음
+        pin_memory=True,  # GPU로 옮기는 속도 향상
+    )
+    return dataset, loader
 
 
 def imshow(img):
@@ -67,17 +58,21 @@ def imshow(img):
 
 
 def conv_block(in_ch, out_ch):
-    """3x3 conv -> BatchNorm -> ReLU -> 2x2 pool (크기 절반)"""
+    """(3x3 conv -> BatchNorm -> ReLU) x 2 -> 2x2 pool (크기 절반)"""
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, 3, padding=1),
         nn.BatchNorm2d(out_ch),  # 층마다 값 분포를 맞춰 학습을 빠르고 안정적으로
+        nn.ReLU(),
+        # 같은 크기에서 conv를 한 번 더: 줄이기 전에 특징을 한 번 더 뽑음 (VGG 방식)
+        nn.Conv2d(out_ch, out_ch, 3, padding=1),
+        nn.BatchNorm2d(out_ch),
         nn.ReLU(),
         nn.MaxPool2d(2, 2),
     )
 
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes):
         super().__init__()
         # 채널을 늘림: 3 -> 32 -> 64 -> 128 -> 256, 크기 224 -> 112 -> 56 -> 28 -> 14
         self.features = nn.Sequential(
@@ -93,7 +88,7 @@ class Net(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, len(classes)),
+            nn.Linear(128, num_classes),
         )
 
     def forward(self, x):
@@ -102,13 +97,7 @@ class Net(nn.Module):
         return self.classifier(x)
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("device:", device)
-
-net = Net().to(device)
-
-
-def evaluate(loader):
+def evaluate(net, loader, device):
     """loader 전체에 대한 (맞춘 개수, 전체 개수)를 돌려준다."""
     net.eval()
     correct = 0
@@ -123,60 +112,85 @@ def evaluate(loader):
     return correct, total
 
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+def main():
+    # 원본만 224로 줄인 폴더 (복사본 없음, val_224와 같은 나눔)
+    trainset, trainloader = make_loader(
+        "./archive/train_224_orig", train_transform, True, num_workers
+    )
+    # 검증셋: 에폭별 성능 확인 + 가장 좋은 모델 고르기용 (test는 마지막에 한 번만)
+    valset, valloader = make_loader("./archive/val_224", transform, False, 2)
+    testset, testloader = make_loader("./archive/test_224", transform, False, 2)
 
-num_epochs = 80  # 6차는 40에폭에서도 검증 정확도가 계속 올라서 2배로
-# 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    classes = trainset.classes  # [수정2] 폴더 이름 = 클래스
+    print(f"train {len(trainset)} / val {len(valset)} / test {len(testset)}", classes)
 
-PATH = "./yes_no_net.pth"
-best_val_acc = 0.0
-start_time = time.time()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("device:", device)
+
+    net = Net(len(classes)).to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+
+    num_epochs = (
+        40  # 80에폭은 너무 오래 걸려서 절반으로 (스케줄러도 40에폭에 맞춰 줄어듦)
+    )
+    # 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+
+    PATH = "./yes_no_net.pth"
+    best_val_acc = 0.0
+    start_time = time.time()
+
+    for epoch in range(num_epochs):
+        net.train()
+        running_loss = 0.0
+        for data in trainloader:
+            inputs, labels = data[0].to(device), data[1].to(device)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        scheduler.step()
+        val_correct, val_total = evaluate(net, valloader, device)
+        val_acc = 100 * val_correct / val_total
+        msg = f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}"
+        print(f"{msg}  val acc: {val_acc:.1f} %  ({time.time() - start_time:.0f}s)")
+        if val_acc > best_val_acc:  # 검증 정확도가 가장 좋은 모델만 저장
+            best_val_acc = val_acc
+            torch.save(net.state_dict(), PATH)
+
+    finish_time = time.time()
+
+    print("Finished Training", finish_time - start_time)
+    print(f"Best val accuracy: {best_val_acc:.1f} %")
+
+    net.load_state_dict(torch.load(PATH))  # 가장 좋았던 모델로 테스트
+
+    dataiter = iter(testloader)
+    images, labels = next(dataiter)
+    imshow(torchvision.utils.make_grid(images))
+    print(
+        "GroundTruth: ", " ".join(f"{classes[labels[j]]:5s}" for j in range(batch_size))
+    )
+
+    # [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
+    net.eval()
+    with torch.no_grad():
+        outputs = net(images.to(device))
+        _, predicted = torch.max(outputs, 1)
+    print(
+        "Predicted:   ",
+        " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size)),
+    )
+
+    correct, total = evaluate(net, testloader, device)
+    print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
 
 
-for epoch in range(num_epochs):
-    net.train()
-    running_loss = 0.0
-    for data in trainloader:
-        inputs, labels = data[0].to(device), data[1].to(device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    scheduler.step()
-    val_correct, val_total = evaluate(valloader)
-    val_acc = 100 * val_correct / val_total
-    msg = f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}"
-    print(f"{msg}  val acc: {val_acc:.1f} %")
-    if val_acc > best_val_acc:  # 검증 정확도가 가장 좋은 모델만 저장
-        best_val_acc = val_acc
-        torch.save(net.state_dict(), PATH)
-
-
-finish_time = time.time()
-
-print("Finished Training", finish_time - start_time)
-print(f"Best val accuracy: {best_val_acc:.1f} %")
-
-net.load_state_dict(torch.load(PATH))  # 가장 좋았던 모델로 테스트
-
-dataiter = iter(testloader)
-images, labels = next(dataiter)
-imshow(torchvision.utils.make_grid(images))
-print("GroundTruth: ", " ".join(f"{classes[labels[j]]:5s}" for j in range(batch_size)))
-
-
-# [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
-net.eval()
-with torch.no_grad():
-    outputs = net(images.to(device))
-    _, predicted = torch.max(outputs, 1)
-print(
-    "Predicted:   ", " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size))
-)
-
-correct, total = evaluate(testloader)
-print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
+# Windows에서 num_workers를 쓰면 worker들이 이 파일을 다시 import 하므로,
+# 학습 코드는 직접 실행할 때만 돌도록 막아 둠
+if __name__ == "__main__":
+    main()
