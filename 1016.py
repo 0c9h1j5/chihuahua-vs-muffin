@@ -8,6 +8,7 @@ import torch.nn.functional as F  # [수정3] F.relu 쓰려면 필요
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
+from torchvision.transforms import v2
 
 transform = transforms.Compose(
     [
@@ -17,10 +18,25 @@ transform = transforms.Compose(
     ]
 )
 
+# 학습용: 사진을 불러올 때마다 랜덤으로 변형 (온라인 증강). val/test는 위 transform
+train_transform = v2.Compose(
+    [
+        v2.ToImage(),
+        v2.RandomHorizontalFlip(),  # 좌우 반전
+        v2.RandomRotation(25),  # ±25도 회전
+        v2.RandomGrayscale(p=0.1),  # 10% 확률로 흑백
+        v2.RandomAdjustSharpness(2, p=0.5),  # 50% 확률로 샤프닝
+        v2.ToDtype(torch.float32, scale=True),
+        v2.GaussianNoise(sigma=0.05),  # 노이즈 (0~1 텐서로 바꾼 뒤에 적용)
+        v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ]
+)
+
 batch_size = 32
 
+# 원본만 224로 줄인 폴더 (복사본 없음, val_224와 같은 나눔)
 trainset = torchvision.datasets.ImageFolder(
-    root="./archive/train_224", transform=transform
+    root="./archive/train_224_orig", transform=train_transform
 )
 trainloader = torch.utils.data.DataLoader(
     trainset, batch_size=batch_size, shuffle=True, num_workers=0
@@ -57,13 +73,15 @@ class Net(nn.Module):
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 53 * 53, 120)  # [수정5] 224 입력 기준 계산
+        self.conv3 = nn.Conv2d(16, 32, 3)
+        self.fc1 = nn.Linear(32 * 25 * 25, 120)  # [수정5] 224 입력 기준 계산
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, len(classes))
 
     def forward(self, x):  # [수정4] 들여쓰기: __init__ 밖으로
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
         x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -100,7 +118,8 @@ best_val_acc = 0.0
 start_time = time.time()
 
 
-for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑
+# 한 에폭이 4배 복사본(16,092장) 대신 원본(4,023장)이라, 같은 양을 보도록 40에폭
+for epoch in range(40):
     net.train()
     running_loss = 0.0
     for data in trainloader:
