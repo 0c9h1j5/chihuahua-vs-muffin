@@ -15,7 +15,7 @@ transform = transforms.Compose(
     ]
 )
 
-batch_size = 16
+batch_size = 2
 
 trainset = torchvision.datasets.ImageFolder(root="./archive/train", transform=transform)
 trainloader = torch.utils.data.DataLoader(
@@ -63,7 +63,7 @@ net = Net()
 
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+optimizer = optim.SGD(net.parameters(), lr=0.002, momentum=0.9)
 
 
 for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑

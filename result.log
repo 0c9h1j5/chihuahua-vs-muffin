@@ -1,0 +1,18 @@
+4733 ['chihuahua', 'muffin'] 1184
+[epoch 1] loss: 0.581
+[epoch 2] loss: 0.397
+[epoch 3] loss: 0.277
+[epoch 4] loss: 0.171
+[epoch 5] loss: 0.091
+[epoch 6] loss: 0.055
+[epoch 7] loss: 0.041
+[epoch 8] loss: 0.065
+[epoch 9] loss: 0.016
+[epoch 10] loss: 0.019
+Finished Training
+GroundTruth:  chihuahua chihuahua
+Predicted:    chihuahua chihuahua
+Test accuracy: 86.1 %  (1019/1184)
+
+batch_size = 2
+lr=0.002
