@@ -1,3 +1,4 @@
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -9,20 +10,24 @@ import torchvision.transforms as transforms
 
 transform = transforms.Compose(
     [
-        transforms.Resize((224, 224)),  # [수정1] PIL 단계에서 크기 통일
+        # 이미지는 augment.py에서 미리 224x224로 줄여 둠
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ]
 )
 
-batch_size = 2
+batch_size = 32
 
-trainset = torchvision.datasets.ImageFolder(root="./archive/train", transform=transform)
+trainset = torchvision.datasets.ImageFolder(
+    root="./archive/train_224", transform=transform
+)
 trainloader = torch.utils.data.DataLoader(
     trainset, batch_size=batch_size, shuffle=True, num_workers=0
 )
 
-testset = torchvision.datasets.ImageFolder(root="./archive/test", transform=transform)
+testset = torchvision.datasets.ImageFolder(
+    root="./archive/test_224", transform=transform
+)
 testloader = torch.utils.data.DataLoader(
     testset, batch_size=batch_size, shuffle=False, num_workers=0
 )
@@ -59,31 +64,38 @@ class Net(nn.Module):
         return x
 
 
-net = Net()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("device:", device)
+
+net = Net().to(device)
 
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.002, momentum=0.9)
+optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+
+start_time = time.time()
 
 
 for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑
     net.train()
     running_loss = 0.0
     for data in trainloader:
-        inputs, labels = data
+        inputs, labels = data[0].to(device), data[1].to(device)
         optimizer.zero_grad()
         outputs = net(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    # [수정8] 2000배치마다 → 에폭마다 출력 (한 에폭이 50배치뿐)
     print(f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}")
 
-print("Finished Training")
+
+finish_time = time.time()
+
+print("Finished Training", finish_time - start_time)
 
 
-PATH = "./yes_no_net.pth"  # [수정9] 파일 이름
+PATH = "./yes_no_net.pth"
 torch.save(net.state_dict(), PATH)
 
 dataiter = iter(testloader)
@@ -95,7 +107,7 @@ print("GroundTruth: ", " ".join(f"{classes[labels[j]]:5s}" for j in range(batch_
 # [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
 net.eval()
 with torch.no_grad():
-    outputs = net(images)
+    outputs = net(images.to(device))
     _, predicted = torch.max(outputs, 1)
 print(
     "Predicted:   ", " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size))
@@ -105,6 +117,7 @@ correct = 0
 total = 0
 with torch.no_grad():
     for images, labels in testloader:
+        images, labels = images.to(device), labels.to(device)
         outputs = net(images)
         _, predicted = torch.max(outputs, 1)
         total += labels.size(0)
