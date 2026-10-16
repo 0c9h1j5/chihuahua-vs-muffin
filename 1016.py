@@ -1,4 +1,5 @@
 import time
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -25,6 +26,12 @@ trainloader = torch.utils.data.DataLoader(
     trainset, batch_size=batch_size, shuffle=True, num_workers=0
 )
 
+# 검증셋: 에폭별 성능 확인 + 가장 좋은 모델 고르기용 (test는 마지막에 한 번만)
+valset = torchvision.datasets.ImageFolder(root="./archive/val_224", transform=transform)
+valloader = torch.utils.data.DataLoader(
+    valset, batch_size=batch_size, shuffle=False, num_workers=0
+)
+
 testset = torchvision.datasets.ImageFolder(
     root="./archive/test_224", transform=transform
 )
@@ -34,7 +41,7 @@ testloader = torch.utils.data.DataLoader(
 
 
 classes = trainset.classes  # [수정2] 폴더 이름 = 클래스
-print(len(trainset), classes, len(testset))
+print(f"train {len(trainset)} / val {len(valset)} / test {len(testset)}", classes)
 
 
 def imshow(img):
@@ -70,9 +77,26 @@ print("device:", device)
 net = Net().to(device)
 
 
+def evaluate(loader):
+    """loader 전체에 대한 (맞춘 개수, 전체 개수)를 돌려준다."""
+    net.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = net(images)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    return correct, total
+
+
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
+PATH = "./yes_no_net.pth"
+best_val_acc = 0.0
 start_time = time.time()
 
 
@@ -87,16 +111,21 @@ for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    print(f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}")
+    val_correct, val_total = evaluate(valloader)
+    val_acc = 100 * val_correct / val_total
+    msg = f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}"
+    print(f"{msg}  val acc: {val_acc:.1f} %")
+    if val_acc > best_val_acc:  # 검증 정확도가 가장 좋은 모델만 저장
+        best_val_acc = val_acc
+        torch.save(net.state_dict(), PATH)
 
 
 finish_time = time.time()
 
 print("Finished Training", finish_time - start_time)
+print(f"Best val accuracy: {best_val_acc:.1f} %")
 
-
-PATH = "./yes_no_net.pth"
-torch.save(net.state_dict(), PATH)
+net.load_state_dict(torch.load(PATH))  # 가장 좋았던 모델로 테스트
 
 dataiter = iter(testloader)
 images, labels = next(dataiter)
@@ -113,13 +142,5 @@ print(
     "Predicted:   ", " ".join(f"{classes[predicted[j]]:5s}" for j in range(batch_size))
 )
 
-correct = 0
-total = 0
-with torch.no_grad():
-    for images, labels in testloader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = net(images)
-        _, predicted = torch.max(outputs, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+correct, total = evaluate(testloader)
 print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
