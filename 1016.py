@@ -141,8 +141,8 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
-    # 80에폭은 너무 오래 걸려서 절반으로 (스케줄러도 40에폭에 맞춰 줄어듦)
-    num_epochs = 40
+    # 9차(40에폭)와 비교하려고 80에폭으로 늘림 (스케줄러도 80에폭에 맞춰짐)
+    num_epochs = 80
     # 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
