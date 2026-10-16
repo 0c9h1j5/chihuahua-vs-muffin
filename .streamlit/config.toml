@@ -1,0 +1,3 @@
+[theme]
+# app.py의 CSS가 밝은 화면 기준이라 Streamlit 기본 위젯도 밝은 테마로 맞춤
+base = "light"

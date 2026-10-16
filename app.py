@@ -1003,6 +1003,14 @@ st.markdown(
     [data-testid="stTabs"] button[role="tab"] { height:2.8rem;padding:0 .9rem;color:#64748b;font-size:.77rem;font-weight:650; }
     [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { color:#4338ca;border-bottom-color:#4f46e5; }
     [data-testid="stExpander"] { border:1px solid #e2e8f0 !important;border-radius:12px !important;background:#fff !important; }
+    [data-testid="stExpander"] summary { background:#f8fafc !important;color:#0f172a !important;border-radius:12px; }
+    [data-testid="stExpander"] summary p,[data-testid="stExpander"] summary svg { color:#0f172a !important;fill:#0f172a; }
+    [data-testid="stMetricLabel"] p { color:#475569 !important; }
+    [data-testid="stMetricValue"],[data-testid="stMetricValue"] div { color:#0f172a !important; }
+    [data-testid="stMetricDelta"] { color:#047857 !important;background:#d1fae5 !important; }
+    [data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] p { color:#475569 !important; }
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) { background:#d1fae5 !important; }
+    [data-testid="stAlertContentSuccess"],[data-testid="stAlertContentSuccess"] p { color:#065f46 !important; }
     [data-testid="stButton"] button { border-radius:10px;border:1px solid #c7d2fe;background:#eef2ff;color:#4338ca;font-weight:650; }
     [data-testid="stButton"] button:hover { border-color:#818cf8;background:#e0e7ff;color:#3730a3; }
     [data-testid="stButton"] button[kind="primary"] { border-color:#4f46e5;background:#4f46e5;color:#fff; }
