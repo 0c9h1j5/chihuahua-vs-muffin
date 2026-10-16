@@ -2,22 +2,24 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import io
 import random
 import re
+import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from types import ModuleType
 from typing import TypedDict
 
 import numpy as np
 import streamlit as st
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image, ImageFilter
-from torchvision import transforms
 
 ROOT = Path(__file__).resolve().parent
 SCRIPT_1016_PATH = ROOT / "1016.py"
@@ -74,16 +76,16 @@ def _tuple_values(
 def parse_1016_config(source: str | None = None) -> ScriptConfig:
     """Safely read training and transform settings without importing 1016.py."""
     config: ScriptConfig = {
-        "batch_size": 2,
-        "lr": 0.002,
+        "batch_size": 32,
+        "lr": 0.001,
         "momentum": 0.9,
         "optimizer_name": "SGD",
-        "epochs": 10,
+        "epochs": 40,
         "resize": (224, 224),
         "normalize_mean": (0.5, 0.5, 0.5),
         "normalize_std": (0.5, 0.5, 0.5),
-        "train_root": "./archive/train",
-        "test_root": "./archive/test",
+        "train_root": "./archive/train_224_orig",
+        "test_root": "./archive/test_224",
         "checkpoint_rel_path": "./yes_no_net.pth",
     }
     if source is None:
@@ -114,6 +116,24 @@ def parse_1016_config(source: str | None = None) -> ScriptConfig:
 
     for statement in ast.walk(tree):
         if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name) and target.id in {"PATH", "num_epochs"}:
+                    value = _literal(statement.value, None)
+                    if target.id == "PATH" and isinstance(value, str):
+                        config["checkpoint_rel_path"] = value
+                    elif target.id == "num_epochs" and isinstance(value, int):
+                        config["epochs"] = value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            value = _literal(statement.value, None)
+            if statement.target.id == "PATH" and isinstance(value, str):
+                config["checkpoint_rel_path"] = value
+            elif statement.target.id == "num_epochs" and isinstance(value, int):
+                config["epochs"] = value
+
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.Assign):
             assigned_names = {
                 target.id for target in statement.targets if isinstance(target, ast.Name)
             }
@@ -126,10 +146,19 @@ def parse_1016_config(source: str | None = None) -> ScriptConfig:
         if statement.value is None:
             continue
         for call in ast.walk(statement.value):
-            if not isinstance(call, ast.Call) or not (
-                isinstance(call.func, ast.Attribute)
-                and call.func.attr == "ImageFolder"
-            ):
+            if not isinstance(call, ast.Call):
+                continue
+            function_name = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+            if function_name == "make_loader" and call.args:
+                root_value = _literal(call.args[0], None)
+                if isinstance(root_value, str):
+                    normalized_root = root_value.replace("\\", "/").lower()
+                    if "train" in normalized_root:
+                        config["train_root"] = root_value
+                    elif "test" in normalized_root:
+                        config["test_root"] = root_value
+                continue
+            if function_name != "ImageFolder":
                 continue
             root_node = next(
                 (keyword.value for keyword in call.keywords if keyword.arg == "root"),
@@ -191,19 +220,6 @@ def parse_1016_config(source: str | None = None) -> ScriptConfig:
                         config["epochs"] = value
 
     return config
-
-
-def build_transform(config: ScriptConfig) -> transforms.Compose:
-    return transforms.Compose(
-        [
-            transforms.Resize(config["resize"]),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                config["normalize_mean"],
-                config["normalize_std"],
-            ),
-        ]
-    )
 
 
 def resolve_project_path(path_value: str) -> Path:
@@ -525,62 +541,77 @@ def watch_project_files() -> None:
 
 
 SCRIPT_CONFIG = parse_1016_config()
-INFERENCE_TRANSFORM = build_transform(SCRIPT_CONFIG)
 CHECKPOINT_SOURCE_PATH = resolve_project_path(SCRIPT_CONFIG["checkpoint_rel_path"])
 CHECKPOINT_PATH = CHECKPOINT_SOURCE_PATH
 TEST_PATH = resolve_project_path(SCRIPT_CONFIG["test_root"])
 TRAIN_PATH = resolve_project_path(SCRIPT_CONFIG["train_root"])
 
 
-class Net(nn.Module):
-    def __init__(self, num_classes: int = 2):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 53 * 53, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+@st.cache_resource
+def load_1016_module(script_mtime: float) -> ModuleType:
+    """Import the guarded training module without invoking its main() routine."""
+    del script_mtime
+    spec = importlib.util.spec_from_file_location("model_1016", SCRIPT_1016_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load Python module from {SCRIPT_1016_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
 
 
 @st.cache_resource
-def load_model(checkpoint_path: str, checkpoint_mtime: float) -> tuple[Net, torch.device]:
+def load_model(
+    checkpoint_path: str,
+    checkpoint_mtime: float,
+    script_mtime: float,
+) -> tuple[nn.Module | None, torch.device, ModuleType | None, str]:
     del checkpoint_mtime
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = Net(num_classes=len(CLASSES)).to(device)
-    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    net.load_state_dict(state)
-    net.eval()
-    return net, device
+    module = None
+    try:
+        module = load_1016_module(script_mtime)
+        net = module.Net(len(CLASSES)).to(device)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        net.load_state_dict(state)
+        net.eval()
+        return net, device, module, ""
+    except Exception as error:
+        detail = f"{type(error).__name__}: {error}"
+        message = (
+            f"체크포인트를 현재 1016.py 모델에 불러오지 못했습니다 ({detail}). "
+            "기존 체크포인트가 이전 아키텍처일 수 있습니다. 호환 체크포인트 생성 후 자동으로 다시 동기화됩니다."
+        )
+        return None, device, module, message
 
 
 def image_tensor(
     img: Image.Image,
     device: torch.device,
-    transform: transforms.Compose = INFERENCE_TRANSFORM,
+    transform: Callable[[Image.Image], torch.Tensor],
 ) -> torch.Tensor:
     return transform(img.convert("RGB")).unsqueeze(0).to(device)
 
 
 def classify_image(
-    img: Image.Image, net: Net, device: torch.device, include_features: bool = False
+    img: Image.Image,
+    net: nn.Module,
+    device: torch.device,
+    model_module: ModuleType,
+    include_features: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, float]:
-    tensor = image_tensor(img, device)
+    tensor = image_tensor(img, device, model_module.transform)
     started = time.perf_counter()
     with torch.inference_mode():
         logits = net(tensor)
         first = second = None
         if include_features:
-            first = net.pool(F.relu(net.conv1(tensor)))
-            second = net.pool(F.relu(net.conv2(first)))
+            first = net.features[0](tensor)
+            second = net.features[1](first)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -591,23 +622,15 @@ def classify_image(
 def evaluate_test_set(
     checkpoint_path: str,
     checkpoint_mtime: float,
+    script_mtime: float,
     test_root: str,
-    resize: tuple[int, int],
-    normalize_mean: tuple[float, float, float],
-    normalize_std: tuple[float, float, float],
 ) -> TestResults:
     del checkpoint_mtime
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = Net(num_classes=len(CLASSES)).to(device)
+    module = load_1016_module(script_mtime)
+    net = module.Net(len(CLASSES)).to(device)
     net.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     net.eval()
-    transform = transforms.Compose(
-        [
-            transforms.Resize(resize),
-            transforms.ToTensor(),
-            transforms.Normalize(normalize_mean, normalize_std),
-        ]
-    )
     counts = np.zeros((2, 2), dtype=np.int64)
     total = 0
     with torch.inference_mode():
@@ -615,7 +638,7 @@ def evaluate_test_set(
             image_paths = list_class_images(Path(test_root), class_name)
             for start in range(0, len(image_paths), 16):
                 batch = [
-                    image_tensor(Image.open(path), device, transform)
+                    image_tensor(Image.open(path), device, module.transform)
                     for path in image_paths[start : start + 16]
                 ]
                 if not batch:
@@ -653,10 +676,12 @@ def choose_random_sample(file_names: list[str]) -> None:
     st.session_state["sample_select"] = random.choice(file_names)
 
 
-def feature_figure(features: torch.Tensor, title: str):
+def feature_figure(
+    features: torch.Tensor, title: str, max_channels: int = 16
+):
     import matplotlib.pyplot as plt
 
-    channels = features[0].detach().cpu().numpy()
+    channels = features[0, :max_channels].detach().cpu().numpy()
     columns = 4
     rows = int(np.ceil(len(channels) / columns))
     fig, axes = plt.subplots(
@@ -704,7 +729,9 @@ _poll_training_files()
 
 checkpoint_mtime = file_mtime(CHECKPOINT_SOURCE_PATH)
 script_mtime = file_mtime(SCRIPT_1016_PATH)
-model, device = load_model(str(CHECKPOINT_SOURCE_PATH), checkpoint_mtime)
+model, device, model_module, model_error = load_model(
+    str(CHECKPOINT_SOURCE_PATH), checkpoint_mtime, script_mtime
+)
 device_label = "CUDA" if device.type == "cuda" else "CPU"
 readme_experiments = parse_readme_experiments()
 training_curves = parse_training_curves()
@@ -737,20 +764,19 @@ config_summary = (
     f"epochs={SCRIPT_CONFIG['epochs']} · {SCRIPT_CONFIG['optimizer_name']}"
     f"(momentum={SCRIPT_CONFIG['momentum']:g})"
 )
-evaluation_error = ""
-try:
-    with st.spinner("현재 체크포인트의 테스트 정확도를 확인하고 있습니다…"):
-        active_metrics = evaluate_test_set(
-            str(CHECKPOINT_SOURCE_PATH),
-            checkpoint_mtime,
-            str(TEST_PATH),
-            SCRIPT_CONFIG["resize"],
-            SCRIPT_CONFIG["normalize_mean"],
-            SCRIPT_CONFIG["normalize_std"],
-        )
-except (OSError, RuntimeError, ValueError) as error:
-    active_metrics = None
-    evaluation_error = str(error)
+evaluation_error = model_error
+active_metrics = None
+if model is not None and model_module is not None:
+    try:
+        with st.spinner("현재 체크포인트의 테스트 정확도를 확인하고 있습니다…"):
+            active_metrics = evaluate_test_set(
+                str(CHECKPOINT_SOURCE_PATH),
+                checkpoint_mtime,
+                script_mtime,
+                str(TEST_PATH),
+            )
+    except (OSError, RuntimeError, ValueError) as error:
+        evaluation_error = str(error)
 
 if active_metrics is None:
     active_accuracy = 0.0
@@ -1206,12 +1232,13 @@ with right, st.container(border=True):
         '<p class="step-subtitle">모델의 예측과 두 클래스의 상대 확률을 확인합니다.</p>',
         unsafe_allow_html=True,
     )
-    if original is not None and transformed is not None:
+    if model is not None and model_module is not None and original is not None and transformed is not None:
         with st.spinner("CNN이 이미지를 분석하고 있습니다…"):
             logits, feature_one, feature_two, inference_ms = classify_image(
                 transformed,
                 model,
                 device,
+                model_module,
                 include_features=True,
             )
             probabilities = torch.softmax(logits.unsqueeze(0), dim=1)[0]
@@ -1219,7 +1246,9 @@ with right, st.container(border=True):
             prob_muffin = probabilities[1].item() * 100
             original_probabilities = None
             if perturbation != "원본 (Clean)":
-                original_logits, _, _, _ = classify_image(original, model, device)
+                original_logits, _, _, _ = classify_image(
+                    original, model, device, model_module
+                )
                 original_probabilities = torch.softmax(
                     original_logits.unsqueeze(0), dim=1
                 )[0]
@@ -1291,6 +1320,11 @@ with right, st.container(border=True):
                 """,
                 unsafe_allow_html=True,
             )
+    elif model is None or model_module is None:
+        st.error(
+            model_error
+            or "1016.py 모델을 불러오지 못했습니다. 스크립트와 체크포인트를 확인해 주세요."
+        )
     else:
         st.info("이미지를 불러오면 판별 결과가 여기에 표시됩니다.")
 
@@ -1347,10 +1381,8 @@ with tab_bench:
                     result = evaluate_test_set(
                         str(CHECKPOINT_SOURCE_PATH),
                         checkpoint_stamp,
+                        script_mtime,
                         str(TEST_PATH),
-                        SCRIPT_CONFIG["resize"],
-                        SCRIPT_CONFIG["normalize_mean"],
-                        SCRIPT_CONFIG["normalize_std"],
                     )
                 counts = np.asarray(result["counts"], dtype=np.int64)
                 correct = int(result["correct"])
@@ -1427,12 +1459,27 @@ with tab_feat:
         unsafe_allow_html=True,
     )
     if feature_one is not None and feature_two is not None:
-        st.markdown('<div class="feature-title">Conv1 · 6개 채널</div>', unsafe_allow_html=True)
-        st.pyplot(feature_figure(feature_one, "Conv1 · 6 channels"), width="stretch")
-        st.markdown('<div class="feature-title">Conv2 · 16개 채널</div>', unsafe_allow_html=True)
-        st.pyplot(feature_figure(feature_two, "Conv2 · 16 channels"), width="stretch")
+        st.markdown(
+            '<div class="feature-title">features[0] · 첫 번째 conv block (16 / 32 채널 표시)</div>',
+            unsafe_allow_html=True,
+        )
+        st.pyplot(
+            feature_figure(feature_one, "features[0] · first 16 / 32 channels"),
+            width="stretch",
+        )
+        st.markdown(
+            '<div class="feature-title">features[1] · 두 번째 conv block (16 / 64 채널 표시)</div>',
+            unsafe_allow_html=True,
+        )
+        st.pyplot(
+            feature_figure(feature_two, "features[1] · first 16 / 64 channels"),
+            width="stretch",
+        )
     else:
-        st.info("특징 맵을 만들 이미지가 없습니다. 테스트 샘플 폴더를 확인해 주세요.")
+        st.info(
+            "현재 체크포인트가 모델과 호환되어 추론이 성공하면 features[0] / features[1] "
+            "활성화 맵을 여기서 확인할 수 있습니다."
+        )
 
 mean_label = ", ".join(f"{value:g}" for value in SCRIPT_CONFIG["normalize_mean"])
 std_label = ", ".join(f"{value:g}" for value in SCRIPT_CONFIG["normalize_std"])
