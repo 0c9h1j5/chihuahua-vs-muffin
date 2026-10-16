@@ -1,18 +1,28 @@
-4733 ['chihuahua', 'muffin'] 1184
-[epoch 1] loss: 0.581
-[epoch 2] loss: 0.397
-[epoch 3] loss: 0.277
-[epoch 4] loss: 0.171
-[epoch 5] loss: 0.091
-[epoch 6] loss: 0.055
-[epoch 7] loss: 0.041
-[epoch 8] loss: 0.065
-[epoch 9] loss: 0.016
-[epoch 10] loss: 0.019
-Finished Training
-GroundTruth:  chihuahua chihuahua
-Predicted:    chihuahua chihuahua
-Test accuracy: 86.1 %  (1019/1184)
-
-batch_size = 2
-lr=0.002
+batch_size = 32
+lr=0.001
+momentum = 0.9
+epochs = 10
+device = cuda
+resize = 224x224
+train_root = ./archive/train_224
+test_root = ./archive/test_224
+checkpoint = ./yes_no_net.pth
+# changes vs previous run
+batch_size: 2 -> 32
+lr: 0.002 -> 0.001
+18932 ['chihuahua', 'muffin'] 1184
+device: cuda
+[epoch 1] loss: 0.506
+[epoch 2] loss: 0.337
+[epoch 3] loss: 0.268
+[epoch 4] loss: 0.184
+[epoch 5] loss: 0.105
+[epoch 6] loss: 0.062
+[epoch 7] loss: 0.032
+[epoch 8] loss: 0.015
+[epoch 9] loss: 0.008
+[epoch 10] loss: 0.005
+Finished Training 542.8816592693329
+GroundTruth:  chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua
+Predicted:    chihuahua chihuahua chihuahua chihuahua muffin chihuahua chihuahua chihuahua chihuahua chihuahua muffin chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua chihuahua muffin
+Test accuracy: 87.3 %  (1034/1184)

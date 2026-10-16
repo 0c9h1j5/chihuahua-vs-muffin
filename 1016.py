@@ -1,4 +1,6 @@
+import re
 import time
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -73,6 +75,80 @@ net = Net().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
+# [수정11] 표준 로그: 설정 헤더 + 직전 실행 대비 변경점을 result.log에 기록
+PATH = "./yes_no_net.pth"
+LOG_PATH = "./result.log"
+RESIZE = "224x224"  # augment.py에서 미리 축소 (transform에 Resize 없음)
+
+# 헤더 값은 위 옵티마이저/에폭 루프의 리터럴 설정과 일치해야 함
+SETTINGS = {
+    "batch_size": f"{batch_size}",
+    "lr": "0.001",
+    "momentum": "0.9",
+    "epochs": "10",
+    "device": f"{device}",
+    "resize": RESIZE,
+    "train_root": f"{trainset.root}",
+    "test_root": f"{testset.root}",
+    "checkpoint": PATH,
+}
+
+PREV_PATTERNS = {
+    "batch_size": r"batch_size\s*=\s*(\S+)",
+    "lr": r"\blr\s*=\s*(\S+)",
+    "momentum": r"momentum\s*=\s*(\S+)",
+    "epochs": r"\bepochs\s*=\s*(\S+)",
+    "device": r"\bdevice\s*=\s*(\S+)",
+    "resize": r"\bresize\s*=\s*(\S+)",
+    "train_root": r"train_root\s*=\s*(\S+)",
+    "test_root": r"test_root\s*=\s*(\S+)",
+    "checkpoint": r"checkpoint\s*=\s*(\S+)",
+}
+
+
+def read_prev_settings(path):
+    """Best-effort: 직전 실행 로그의 설정 헤더를 파싱한다."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    return {
+        k: m.group(1) for k, p in PREV_PATTERNS.items() if (m := re.search(p, text))
+    }
+
+
+prev = read_prev_settings(LOG_PATH)  # 덮어쓰기 전에 반드시 먼저 읽어야 함
+log_file = open(LOG_PATH, "w", encoding="utf-8")
+
+
+def log_line(text):
+    log_file.write(f"{text}\n")
+    log_file.flush()
+
+
+log_line(f"batch_size = {SETTINGS['batch_size']}")
+log_line(f"lr={SETTINGS['lr']}")
+log_line(f"momentum = {SETTINGS['momentum']}")
+log_line(f"epochs = {SETTINGS['epochs']}")
+log_line(f"device = {SETTINGS['device']}")
+log_line(f"resize = {SETTINGS['resize']}")
+log_line(f"train_root = {SETTINGS['train_root']}")
+log_line(f"test_root = {SETTINGS['test_root']}")
+log_line(f"checkpoint = {SETTINGS['checkpoint']}")
+
+changed = [
+    f"{k}: {prev[k]} -> {SETTINGS[k]}"
+    for k in SETTINGS
+    if prev.get(k) is not None and prev[k] != SETTINGS[k]
+]
+if changed:
+    log_line("# changes vs previous run")
+    for line in changed:
+        log_line(line)
+else:
+    log_line("# changes vs previous run: none (첫 실행 또는 동일 설정)")
+
 start_time = time.time()
 
 
@@ -87,15 +163,17 @@ for epoch in range(10):  # [수정7] 데이터가 적어서 에폭↑, lr↑
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    print(f"[epoch {epoch + 1}] loss: {running_loss / len(trainloader):.3f}")
+    avg_loss = running_loss / len(trainloader)
+    print(f"[epoch {epoch + 1}] loss: {avg_loss:.3f}")
+    log_line(f"[epoch {epoch + 1}] loss: {avg_loss:.3f}")
 
 
 finish_time = time.time()
 
 print("Finished Training", finish_time - start_time)
+log_line(f"Finished Training {finish_time - start_time}")
 
 
-PATH = "./yes_no_net.pth"
 torch.save(net.state_dict(), PATH)
 
 dataiter = iter(testloader)
@@ -123,3 +201,6 @@ with torch.no_grad():
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 print(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
+log_line(f"Test accuracy: {100 * correct / total:.1f} %  ({correct}/{total})")
+
+log_file.close()

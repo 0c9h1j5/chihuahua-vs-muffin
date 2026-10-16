@@ -319,6 +319,39 @@ def parse_readme_experiments(path: Path = README_PATH) -> list[dict[str, str]]:
     return rows
 
 
+def parse_settings_pair(settings: str) -> tuple[int, float] | None:
+    batch_match = re.search(r"\bbs\s*=\s*(\d+)", settings, flags=re.IGNORECASE)
+    if batch_match is None:
+        batch_match = re.search(
+            r"\bbatch_size\s*=\s*(\d+)", settings, flags=re.IGNORECASE
+        )
+    lr_match = re.search(r"\blr\s*=\s*([0-9]*\.?[0-9]+)", settings)
+    if batch_match is None or lr_match is None:
+        return None
+    return int(batch_match.group(1)), float(lr_match.group(1))
+
+
+def same_training_settings(
+    first: tuple[int, float], second: tuple[int, float]
+) -> bool:
+    return first[0] == second[0] and abs(first[1] - second[1]) <= 1e-12
+
+
+def render_experiment_row(row: dict[str, str], is_current_match: bool) -> str:
+    row_class = ' class="matched"' if is_current_match else ""
+    marker = (
+        '<span class="match-marker">현재 1016.py 설정과 일치</span>'
+        if is_current_match
+        else ""
+    )
+    return (
+        f"<tr{row_class}><td>{escape(row['name'])}{marker}</td>"
+        f'<td class="mono">{escape(row["settings"])}</td>'
+        f"<td>{escape(row['accuracy'])}</td>"
+        f"<td>{escape(row['error'])}</td></tr>"
+    )
+
+
 def parse_training_curves(
     result_path: Path = RESULT_LOG_PATH,
     tune_path: Path = TUNE_LOG_PATH,
@@ -349,7 +382,7 @@ def parse_training_curves(
         )
         curves.append(
             {
-                "label": f"1016.py · bs={logged_batch} · lr={logged_lr:g}",
+                "label": f"result.log · bs={logged_batch} · lr={logged_lr:g}",
                 "epochs": [epoch for epoch, _ in latest_run],
                 "losses": [loss for _, loss in latest_run],
                 "source": "result.log",
@@ -379,7 +412,7 @@ def parse_training_curves(
         accuracy = float(accuracy_match.group(1)) if accuracy_match else -1.0
         trials.append(
             {
-                "label": f"tune.py best · bs={match.group(1)} · lr={match.group(2)}",
+                "label": f"tune.log · bs={match.group(1)} · lr={match.group(2)}",
                 "epochs": [epoch for epoch, _ in losses],
                 "losses": [loss for _, loss in losses],
                 "source": "tune.log",
@@ -676,6 +709,27 @@ device_label = "CUDA" if device.type == "cuda" else "CPU"
 readme_experiments = parse_readme_experiments()
 training_curves = parse_training_curves()
 result_log_settings = parse_result_log_settings()
+current_settings_pair = (SCRIPT_CONFIG["batch_size"], SCRIPT_CONFIG["lr"])
+readme_settings_rows = [
+    (row, pair)
+    for row in readme_experiments
+    if (pair := parse_settings_pair(row["settings"])) is not None
+]
+matched_readme_experiment = next(
+    (
+        row
+        for row, pair in reversed(readme_settings_rows)
+        if same_training_settings(pair, current_settings_pair)
+    ),
+    None,
+)
+latest_readme_setting = readme_settings_rows[-1] if readme_settings_rows else None
+latest_readme_experiment = (
+    latest_readme_setting[0] if latest_readme_setting is not None else None
+)
+latest_readme_pair = (
+    latest_readme_setting[1] if latest_readme_setting is not None else None
+)
 train_count = count_dataset_images(TRAIN_PATH)
 test_root_count = count_dataset_images(TEST_PATH)
 config_summary = (
@@ -743,10 +797,56 @@ checkpoint_time_label = (
     if checkpoint_mtime
     else "파일 없음"
 )
-config_changed = result_log_settings is not None and (
-    SCRIPT_CONFIG["batch_size"] != result_log_settings[0]
-    or abs(SCRIPT_CONFIG["lr"] - result_log_settings[1]) > 1e-12
+config_changed = False
+sync_reference_name = ""
+sync_reference_settings: tuple[int, float] | None = None
+sync_reference_source = ""
+if matched_readme_experiment is not None:
+    sync_reference_name = matched_readme_experiment["name"]
+    sync_reference_settings = current_settings_pair
+    sync_reference_source = "README"
+elif latest_readme_setting is not None:
+    latest_row, latest_pair = latest_readme_setting
+    sync_reference_name = latest_row["name"]
+    sync_reference_settings = latest_pair
+    sync_reference_source = "README"
+    config_changed = True
+elif result_log_settings is not None:
+    sync_reference_name = "result.log"
+    sync_reference_settings = result_log_settings
+    sync_reference_source = "result.log"
+    config_changed = not same_training_settings(
+        current_settings_pair, result_log_settings
+    )
+else:
+    sync_reference_name = "비교 가능한 README/result.log 설정 없음"
+    config_changed = True
+sync_reference_detail = (
+    f"bs={sync_reference_settings[0]}, lr={sync_reference_settings[1]:g}"
+    if sync_reference_settings is not None
+    else "설정 없음"
 )
+sync_reference_chip = (
+    f'<span class="sync-chip">기준: {escape(sync_reference_source)} · '
+    f'{escape(sync_reference_name)} · {sync_reference_detail}</span>'
+)
+if matched_readme_experiment is not None:
+    sync_state_html = (
+        f'<span class="sync-confirm">✓ 동기화됨 · README: '
+        f'{escape(matched_readme_experiment["name"])}</span>'
+    )
+elif config_changed:
+    sync_state_html = (
+        '<span class="sync-alert">⚡ 설정 변경 감지 · '
+        f'현재 bs={SCRIPT_CONFIG["batch_size"]}, lr={SCRIPT_CONFIG["lr"]:g} · '
+        f'기준: {escape(sync_reference_source or "README")} · '
+        f'{escape(sync_reference_name)} ({sync_reference_detail})</span>'
+    )
+else:
+    sync_state_html = (
+        f'<span class="sync-confirm">✓ 동기화됨 · '
+        f'{escape(sync_reference_source)}: {escape(sync_reference_name)}</span>'
+    )
 checkpoint_name = escape(CHECKPOINT_SOURCE_PATH.name)
 checkpoint_path_label = escape(SCRIPT_CONFIG["checkpoint_rel_path"])
 sync_chips = "".join(
@@ -818,6 +918,7 @@ st.markdown(
     .connection-status { display:inline-flex;align-items:center;gap:.42rem;margin-right:.25rem;color:#047857;font-size:.69rem;font-weight:750;white-space:nowrap; }
     .connection-status i { width:7px;height:7px;border-radius:50%;background:#10b981;box-shadow:0 0 0 3px #d1fae5; }
     .sync-chip { padding:.32rem .5rem;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#475569;font:500 .61rem 'JetBrains Mono',monospace;white-space:nowrap; }
+    .sync-confirm { display:inline-flex;align-items:center;gap:.35rem;padding:.33rem .52rem;border:1px solid #a7f3d0;border-radius:8px;background:#ecfdf5;color:#047857;font-size:.65rem;font-weight:700; }
     .sync-alert { display:inline-flex;align-items:center;gap:.35rem;padding:.33rem .52rem;border:1px solid #fed7aa;border-radius:8px;background:#fff7ed;color:#c2410c;font-size:.65rem;font-weight:650; }
     .workspace { margin-top:.2rem; }
     .step-title { display:flex; align-items:center; gap:.65rem; margin:0 0 .65rem; color:#0f172a; font-size:1rem; font-weight:750; letter-spacing:-.02em; }
@@ -888,11 +989,15 @@ st.markdown(
     .bench-table td { padding:.78rem .8rem;color:#334155;border-bottom:1px solid #f1f5f9; }
     .bench-table tr:last-child td { border-bottom:0; }
     .bench-table tr.current td:first-child { color:#4338ca;font-weight:700; }
+    .bench-table tr.matched td { background:#ecfdf5;color:#065f46; }
+    .bench-table tr.matched td:first-child { border-left:3px solid #059669; }
+    .match-marker { display:inline-flex;margin-left:.45rem;padding:.18rem .36rem;border-radius:999px;background:#d1fae5;color:#047857;font-size:.58rem;font-weight:750;white-space:nowrap; }
     .bench-table .mono { color:#475569;font:500 .67rem 'JetBrains Mono',monospace; }
     .bench-table .good { color:#059669;font-weight:750; }
     .bench-table .bad { color:#e11d48;font-weight:700; }
     .tab-intro { margin:.35rem 0 1rem;color:#64748b;font-size:.76rem;line-height:1.5; }
     .feature-title { margin:.8rem 0 .2rem;color:#0f172a;font-size:.88rem;font-weight:750; }
+    .curve-note { margin:.35rem 0;padding:.6rem .72rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;color:#475569;font-size:.68rem;line-height:1.5; }
     .footer-note { margin-top:1.5rem;padding-top:.8rem;border-top:1px solid #e2e8f0;color:#94a3b8;font:500 .62rem 'JetBrains Mono',monospace;letter-spacing:.015em; }
     @media(max-width:980px) { .kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media(max-width:620px) {
@@ -925,7 +1030,8 @@ st.markdown(
       <span class="connection-status"><i></i>🔗 1016.py 실시간 연동됨</span>
       <span class="sync-chip">1016.py · {script_time_label}</span>
       {sync_chips}
-      {f'<span class="sync-alert">⚡ 1016.py 수치 변경 감지됨 · 현재 코드 bs={SCRIPT_CONFIG["batch_size"]}, lr={SCRIPT_CONFIG["lr"]:g}</span>' if config_changed else ''}
+      {sync_reference_chip}
+      {sync_state_html}
     </div>
     """,
     unsafe_allow_html=True,
@@ -1216,12 +1322,7 @@ with tab_bench:
         f'<td class="bad">{live_error}</td></tr>'
     )
     readme_rows_html = "".join(
-        "<tr>"
-        f"<td>{escape(row['name'])}</td>"
-        f'<td class="mono">{escape(row["settings"])}</td>'
-        f"<td>{escape(row['accuracy'])}</td>"
-        f"<td>{escape(row['error'])}</td>"
-        "</tr>"
+        render_experiment_row(row, row is matched_readme_experiment)
         for row in readme_experiments
     )
     st.markdown(
@@ -1285,8 +1386,12 @@ with tab_bench:
 with tab_loss:
     st.markdown(
         '<div class="step-title"><span class="step-index">L</span>학습 곡선 · epoch별 loss 변화</div>'
-        '<p class="tab-intro">result.log의 현재 학습과 tune.log의 최고 정확도 스윕을 함께 표시합니다. 실선은 loss, 점선·× 마커는 직전 epoch 대비 Δ loss(%)입니다.</p>',
+        '<p class="tab-intro">result.log에 기록된 최신 학습과 tune.log의 최고 정확도 스윕을 함께 표시합니다. 실선은 loss, 점선·× 마커는 직전 epoch 대비 Δ loss(%)입니다.</p>',
         unsafe_allow_html=True,
+    )
+    st.caption(
+        "README = 최종 실험 결과(정확도·오차율), "
+        "result.log / tune.log = epoch별 loss 곡선 소스"
     )
     if training_curves:
         st.pyplot(training_curve_figure(training_curves), width="stretch")
@@ -1294,6 +1399,21 @@ with tab_loss:
             "변화율 계산: (현재 epoch loss − 이전 epoch loss) ÷ 이전 epoch loss × 100. "
             "음수는 loss 감소, 양수는 증가를 뜻합니다."
         )
+        if latest_readme_experiment is not None and latest_readme_pair is not None:
+            for curve in training_curves:
+                curve_label = str(curve["label"])
+                curve_settings = parse_settings_pair(curve_label)
+                if curve_settings is not None and not same_training_settings(
+                    curve_settings, latest_readme_pair
+                ):
+                    st.markdown(
+                        '<div class="curve-note">'
+                        f"{escape(curve_label)}은 README 최신 실험 「"
+                        f"{escape(latest_readme_experiment['name'])}」"
+                        f"({escape(latest_readme_experiment['settings'])})과 설정이 다릅니다. "
+                        "결과는 해당 로그에 남아 있는 최신 epoch별 loss 곡선입니다.</div>",
+                        unsafe_allow_html=True,
+                    )
     else:
         st.info(
             "학습 로그가 아직 없습니다. 1016.py 또는 tune.py 실행 후 result.log / tune.log에 "
