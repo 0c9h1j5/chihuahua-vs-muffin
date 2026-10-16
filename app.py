@@ -80,7 +80,7 @@ def parse_1016_config(source: str | None = None) -> ScriptConfig:
         "lr": 0.001,
         "momentum": 0.9,
         "optimizer_name": "SGD",
-        "epochs": 40,
+        "epochs": 80,
         "resize": (224, 224),
         "normalize_mean": (0.5, 0.5, 0.5),
         "normalize_std": (0.5, 0.5, 0.5),
@@ -284,7 +284,7 @@ def parse_readme_experiments(path: Path = README_PATH) -> list[dict[str, str]]:
         body = "\n".join(lines[1:])
         batch_match = re.search(r"\bbatch_size\s*=\s*(\d+)", body)
         lr_match = re.search(r"\blr\s*=\s*([0-9]*\.?[0-9]+)", body)
-        epoch_match = re.search(r"\bepochs\s*=\s*(\d+)", body)
+        epoch_match = re.search(r"\bepochs?\s*=\s*(\d+)", body)
         settings = []
         if batch_match:
             settings.append(f"bs={batch_match.group(1)}")
