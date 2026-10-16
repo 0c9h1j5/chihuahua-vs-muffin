@@ -1,0 +1,100 @@
+   Building chihuahua-vs-muffin @ file:///C:/sessacp2
+      Built chihuahua-vs-muffin @ file:///C:/sessacp2
+Uninstalled 1 package in 5ms
+Installed 1 package in 18ms
+device=cuda  epochs=6  seed=42  workers=4
+train=4733  test=1184  classes=['chihuahua', 'muffin']
+
+>>> batch_size=16  lr=0.001
+    [epoch  1/6] loss: 0.637
+    [epoch  2/6] loss: 0.473
+    [epoch  3/6] loss: 0.395
+    [epoch  4/6] loss: 0.352
+    [epoch  5/6] loss: 0.319
+    [epoch  6/6] loss: 0.275
+RESULT batch_size=16  lr=0.001  acc=87.3%
+
+>>> batch_size=16  lr=0.005
+    [epoch  1/6] loss: 0.572
+    [epoch  2/6] loss: 0.445
+    [epoch  3/6] loss: 0.375
+    [epoch  4/6] loss: 0.293
+    [epoch  5/6] loss: 0.209
+    [epoch  6/6] loss: 0.160
+RESULT batch_size=16  lr=0.005  acc=85.8%
+
+>>> batch_size=16  lr=0.01
+    [epoch  1/6] loss: 0.606
+    [epoch  2/6] loss: 0.433
+    [epoch  3/6] loss: 0.312
+    [epoch  4/6] loss: 0.225
+    [epoch  5/6] loss: 0.148
+    [epoch  6/6] loss: 0.099
+RESULT batch_size=16  lr=0.01   acc=86.0%
+
+>>> batch_size=32  lr=0.001
+    [epoch  1/6] loss: 0.680
+    [epoch  2/6] loss: 0.579
+    [epoch  3/6] loss: 0.461
+    [epoch  4/6] loss: 0.402
+    [epoch  5/6] loss: 0.370
+    [epoch  6/6] loss: 0.346
+RESULT batch_size=32  lr=0.001  acc=84.5%
+
+>>> batch_size=32  lr=0.005
+    [epoch  1/6] loss: 0.605
+    [epoch  2/6] loss: 0.442
+    [epoch  3/6] loss: 0.410
+    [epoch  4/6] loss: 0.323
+    [epoch  5/6] loss: 0.257
+    [epoch  6/6] loss: 0.222
+RESULT batch_size=32  lr=0.005  acc=84.7%
+
+>>> batch_size=32  lr=0.01
+    [epoch  1/6] loss: 0.608
+    [epoch  2/6] loss: 0.441
+    [epoch  3/6] loss: 0.407
+    [epoch  4/6] loss: 0.302
+    [epoch  5/6] loss: 0.238
+    [epoch  6/6] loss: 0.153
+RESULT batch_size=32  lr=0.01   acc=85.6%
+
+>>> batch_size=64  lr=0.001
+    [epoch  1/6] loss: 0.688
+    [epoch  2/6] loss: 0.668
+    [epoch  3/6] loss: 0.607
+    [epoch  4/6] loss: 0.508
+    [epoch  5/6] loss: 0.451
+    [epoch  6/6] loss: 0.418
+RESULT batch_size=64  lr=0.001  acc=82.8%
+
+>>> batch_size=64  lr=0.005
+    [epoch  1/6] loss: 0.650
+    [epoch  2/6] loss: 0.469
+    [epoch  3/6] loss: 0.402
+    [epoch  4/6] loss: 0.343
+    [epoch  5/6] loss: 0.292
+    [epoch  6/6] loss: 0.270
+RESULT batch_size=64  lr=0.005  acc=86.9%
+
+>>> batch_size=64  lr=0.01
+    [epoch  1/6] loss: 0.618
+    [epoch  2/6] loss: 0.459
+    [epoch  3/6] loss: 0.399
+    [epoch  4/6] loss: 0.338
+    [epoch  5/6] loss: 0.260
+    [epoch  6/6] loss: 0.243
+RESULT batch_size=64  lr=0.01   acc=86.2%
+
+==== summary (sorted by accuracy) ====
+batch_size=16  lr=0.001  acc=87.3%
+batch_size=64  lr=0.005  acc=86.9%
+batch_size=64  lr=0.01   acc=86.2%
+batch_size=16  lr=0.01   acc=86.0%
+batch_size=16  lr=0.005  acc=85.8%
+batch_size=32  lr=0.01   acc=85.6%
+batch_size=32  lr=0.005  acc=84.7%
+batch_size=32  lr=0.001  acc=84.5%
+batch_size=64  lr=0.001  acc=82.8%
+
+BEST batch_size=16 lr=0.001 acc=87.3%
