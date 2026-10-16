@@ -145,3 +145,24 @@ Test accuracy: 93.8 %  (1110/1184)
   - Windows에서 worker를 쓰려고 학습 코드를 main() 안으로 옮기고 `if __name__ == "__main__":`로 감쌈
   - worker를 6개로 늘려도 같은 속도 → 이제 GPU 계산이 병목
 - 검증 정확도가 에폭마다 83~94%로 크게 흔들림 (검증셋이 710장이라 몇 장 차이로도 변동이 큼)
+
+## 9차 시도
+
+batch_size = 32
+lr=0.001 (CosineAnnealingLR로 0까지 감소)
+epoch = 40
+
+sample: train 4023 / val 710 / test 1184 ['chihuahua', 'muffin']
+
+Finished Training 537.7116229534149
+
+Best val accuracy: 94.6 % (38에폭)
+
+Test accuracy: 94.6 %  (1120/1184)
+
+### 특이사항
+
+- 혼합 정밀도(AMP) 적용: torch.autocast(float16) + GradScaler, 모델/설정은 8차와 동일
+- 배치당 145ms → 97ms, GPU 메모리 1.9GB → 1.1GB
+- 학습 시간 808초 → 538초 (약 1.5배 빨라짐)
+- 정확도는 떨어지지 않음 (테스트 93.8% → 94.6%, 랜덤 요소가 있어서 이 정도 차이는 실행마다 달라질 수 있음)

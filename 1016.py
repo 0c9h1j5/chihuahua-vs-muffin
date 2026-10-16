@@ -97,6 +97,14 @@ class Net(nn.Module):
         return self.classifier(x)
 
 
+def autocast(device):
+    """혼합 정밀도(AMP): GPU에서 무거운 계산(conv, 행렬곱)을 float16으로.
+    loss, BatchNorm 등 정밀도가 중요한 계산은 PyTorch가 알아서 float32로 둔다."""
+    return torch.autocast(
+        device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"
+    )
+
+
 def evaluate(net, loader, device):
     """loader 전체에 대한 (맞춘 개수, 전체 개수)를 돌려준다."""
     net.eval()
@@ -105,7 +113,8 @@ def evaluate(net, loader, device):
     with torch.no_grad():
         for images, labels in loader:
             images, labels = images.to(device), labels.to(device)
-            outputs = net(images)
+            with autocast(device):
+                outputs = net(images)
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
@@ -132,11 +141,13 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
-    num_epochs = (
-        40  # 80에폭은 너무 오래 걸려서 절반으로 (스케줄러도 40에폭에 맞춰 줄어듦)
-    )
+    # 80에폭은 너무 오래 걸려서 절반으로 (스케줄러도 40에폭에 맞춰 줄어듦)
+    num_epochs = 40
     # 학습률을 코사인 곡선으로 0.001 -> 0 까지 천천히 줄임 (마지막에 안정적으로 수렴)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+
+    # float16은 아주 작은 기울기가 0이 되기 쉬워서, loss를 키워서 계산한 뒤 되돌림
+    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     PATH = "./yes_no_net.pth"
     best_val_acc = 0.0
@@ -148,10 +159,12 @@ def main():
         for data in trainloader:
             inputs, labels = data[0].to(device), data[1].to(device)
             optimizer.zero_grad()
-            outputs = net(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with autocast(device):
+                outputs = net(inputs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             running_loss += loss.item()
         scheduler.step()
         val_correct, val_total = evaluate(net, valloader, device)
@@ -178,7 +191,7 @@ def main():
 
     # [수정10] 예측 + 정확도 (튜토리얼 뒷부분)
     net.eval()
-    with torch.no_grad():
+    with torch.no_grad(), autocast(device):
         outputs = net(images.to(device))
         _, predicted = torch.max(outputs, 1)
     print(
