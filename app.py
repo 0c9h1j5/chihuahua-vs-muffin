@@ -80,7 +80,7 @@ def parse_1016_config(source: str | None = None) -> ScriptConfig:
         "lr": 0.001,
         "momentum": 0.9,
         "optimizer_name": "SGD",
-        "epochs": 40,
+        "epochs": 80,
         "resize": (224, 224),
         "normalize_mean": (0.5, 0.5, 0.5),
         "normalize_std": (0.5, 0.5, 0.5),
@@ -284,7 +284,7 @@ def parse_readme_experiments(path: Path = README_PATH) -> list[dict[str, str]]:
         body = "\n".join(lines[1:])
         batch_match = re.search(r"\bbatch_size\s*=\s*(\d+)", body)
         lr_match = re.search(r"\blr\s*=\s*([0-9]*\.?[0-9]+)", body)
-        epoch_match = re.search(r"\bepochs\s*=\s*(\d+)", body)
+        epoch_match = re.search(r"\bepochs?\s*=\s*(\d+)", body)
         settings = []
         if batch_match:
             settings.append(f"bs={batch_match.group(1)}")
@@ -333,6 +333,44 @@ def parse_readme_experiments(path: Path = README_PATH) -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def parse_readme_process(path: Path = README_PATH) -> list[dict[str, object]]:
+    """README의 'N차 시도' 섹션을 순서대로 읽어 실험 과정 타임라인으로 만든다."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    steps: list[dict[str, object]] = []
+    for section in re.split(r"(?m)^##\s+", content)[1:]:
+        lines = section.splitlines()
+        if not lines or not re.match(r"\d+차", lines[0].strip()):
+            continue
+        body = "\n".join(lines[1:])
+        test = re.search(r"Test accuracy\s*:\s*([0-9.]+)\s*%", body)
+        if test is None:
+            continue
+        val = re.search(r"Best val accuracy\s*:\s*([0-9.]+)\s*%(?:\s*\(([^)]*)\))?", body)
+        seconds = re.search(r"Finished Training\s+([0-9.]+)", body)
+        notes_match = re.search(r"(?ms)^###\s*특이사항\s*$(.*)", body)
+        notes = []
+        if notes_match:
+            notes = [
+                line.strip()[2:].strip()
+                for line in notes_match.group(1).splitlines()
+                if line.strip().startswith("- ")
+            ]
+        steps.append(
+            {
+                "name": lines[0].strip(),
+                "test": float(test.group(1)),
+                "val": float(val.group(1)) if val else None,
+                "val_epoch": val.group(2) if val and val.group(2) else None,
+                "seconds": float(seconds.group(1)) if seconds else None,
+                "notes": notes,
+            }
+        )
+    return steps
 
 
 def parse_settings_pair(settings: str) -> tuple[int, float] | None:
@@ -1003,6 +1041,14 @@ st.markdown(
     [data-testid="stTabs"] button[role="tab"] { height:2.8rem;padding:0 .9rem;color:#64748b;font-size:.77rem;font-weight:650; }
     [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { color:#4338ca;border-bottom-color:#4f46e5; }
     [data-testid="stExpander"] { border:1px solid #e2e8f0 !important;border-radius:12px !important;background:#fff !important; }
+    [data-testid="stExpander"] summary { background:#f8fafc !important;color:#0f172a !important;border-radius:12px; }
+    [data-testid="stExpander"] summary p,[data-testid="stExpander"] summary svg { color:#0f172a !important;fill:#0f172a; }
+    [data-testid="stMetricLabel"] p { color:#475569 !important; }
+    [data-testid="stMetricValue"],[data-testid="stMetricValue"] div { color:#0f172a !important; }
+    [data-testid="stMetricDelta"] { color:#047857 !important;background:#d1fae5 !important; }
+    [data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] p { color:#475569 !important; }
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) { background:#d1fae5 !important; }
+    [data-testid="stAlertContentSuccess"],[data-testid="stAlertContentSuccess"] p { color:#065f46 !important; }
     [data-testid="stButton"] button { border-radius:10px;border:1px solid #c7d2fe;background:#eef2ff;color:#4338ca;font-weight:650; }
     [data-testid="stButton"] button:hover { border-color:#818cf8;background:#e0e7ff;color:#3730a3; }
     [data-testid="stButton"] button[kind="primary"] { border-color:#4f46e5;background:#4f46e5;color:#fff; }
@@ -1328,11 +1374,12 @@ with right, st.container(border=True):
     else:
         st.info("이미지를 불러오면 판별 결과가 여기에 표시됩니다.")
 
-tab_bench, tab_loss, tab_feat = st.tabs(
+tab_bench, tab_loss, tab_feat, tab_process = st.tabs(
     [
         "📊 실험별 정확도·오차율 비교 및 전체 테스트셋 검증",
         "📈 학습 곡선 · epoch별 loss 변화",
         "🔬 CNN 합성곱(Conv1·Conv2) 특징 맵 시각화",
+        "🧭 실험 과정 · 1차부터 지금까지",
     ]
 )
 
@@ -1481,7 +1528,59 @@ with tab_feat:
             "활성화 맵을 여기서 확인할 수 있습니다."
         )
 
-mean_label = ", ".join(f"{value:g}" for value in SCRIPT_CONFIG["normalize_mean"])
+with tab_process:
+    st.markdown(
+        '<div class="step-title"><span class="step-index">P</span>실험 과정 · 무엇을 바꿔서 얼마나 올랐나</div>'
+        '<p class="tab-intro">README.md의 시도별 기록을 순서대로 보여줍니다. README가 바뀌면 자동으로 다시 읽습니다.</p>',
+        unsafe_allow_html=True,
+    )
+    process_steps = parse_readme_process()
+    if process_steps:
+        first, last = process_steps[0], process_steps[-1]
+        kpi_a, kpi_b, kpi_c = st.columns(3)
+        kpi_a.metric("시도 횟수", f"{len(process_steps)}회")
+        kpi_b.metric("첫 시도 테스트 정확도", f"{first['test']:.1f}%")
+        kpi_c.metric(
+            "최신 테스트 정확도",
+            f"{last['test']:.1f}%",
+            f"{last['test'] - first['test']:+.1f}%p",
+        )
+        st.bar_chart(
+            {
+                # 문자열 축은 사전순으로 정렬되므로 '01차' 형태로 맞춤
+                "시도": [
+                    re.sub(r"^(\d+)차.*", lambda m: f"{int(m.group(1)):02d}차", step["name"])
+                    for step in process_steps
+                ],
+                "테스트 정확도(%)": [step["test"] for step in process_steps],
+            },
+            x="시도",
+            y="테스트 정확도(%)",
+            height=260,
+        )
+        previous_test: float | None = None
+        for step in process_steps:
+            change = (
+                f" ({step['test'] - previous_test:+.1f}%p)" if previous_test is not None else ""
+            )
+            with st.expander(f"{step['name']} · 테스트 {step['test']:.1f}%{change}"):
+                facts = []
+                if step["val"] is not None:
+                    epoch_note = f" ({step['val_epoch']})" if step["val_epoch"] else ""
+                    facts.append(f"최고 검증 정확도 {step['val']:.1f}%{epoch_note}")
+                if step["seconds"] is not None:
+                    facts.append(f"학습 시간 {step['seconds']:.0f}초")
+                if facts:
+                    st.caption(" · ".join(facts))
+                if step["notes"]:
+                    st.markdown("\n".join(f"- {note}" for note in step["notes"]))
+                else:
+                    st.caption("기록된 특이사항이 없습니다.")
+            previous_test = step["test"]
+    else:
+        st.info("README.md에서 'N차 시도' 기록을 찾지 못했습니다.")
+
+mean_label =", ".join(f"{value:g}" for value in SCRIPT_CONFIG["normalize_mean"])
 std_label = ", ".join(f"{value:g}" for value in SCRIPT_CONFIG["normalize_std"])
 st.markdown(
     f'<div class="footer-note">{resize_label} RGB · Normalize ({mean_label}) / ({std_label}) · SOFTMAX CLASS PROBABILITIES · CHECKPOINT: {escape(SCRIPT_CONFIG["checkpoint_rel_path"])}</div>',
