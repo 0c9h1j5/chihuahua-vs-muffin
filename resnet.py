@@ -21,7 +21,7 @@ from torchvision.transforms import v2
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-# val/test용: 변형 없이 텐서 변환 + 정규화 (이미지는 augment.py에서 미리 224x224)
+# val/test용: 변형 없이 텐서 변환 + 정규화 (이미지는 archive/*_224 폴더에 미리 224x224)
 transform = v2.Compose(
     [
         v2.ToImage(),

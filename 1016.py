@@ -11,7 +11,7 @@ from torchvision.transforms import v2
 
 transform = transforms.Compose(
     [
-        # 이미지는 augment.py에서 미리 224x224로 줄여 둠
+        # 이미지는 archive/*_224 폴더에 미리 224x224로 줄여 둠
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ]
