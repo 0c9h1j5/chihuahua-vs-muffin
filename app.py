@@ -429,6 +429,10 @@ def parse_training_curves(
             if latest_run and epoch <= latest_run[-1][0]:
                 latest_run = []
             latest_run.append((epoch, loss))
+        val_accs = [
+            float(value)
+            for value in re.findall(r"val acc:\s*([0-9]+(?:\.[0-9]+)?)", result_text)
+        ][-len(latest_run) :]
         log_settings = parse_result_log_settings(result_path)
         logged_batch, logged_lr = log_settings or (
             SCRIPT_CONFIG["batch_size"],
@@ -439,6 +443,7 @@ def parse_training_curves(
                 "label": f"result.log · bs={logged_batch} · lr={logged_lr:g}",
                 "epochs": [epoch for epoch, _ in latest_run],
                 "losses": [loss for _, loss in latest_run],
+                "val_accs": val_accs if len(val_accs) == len(latest_run) else [],
                 "source": "result.log",
             }
         )
@@ -481,9 +486,10 @@ def parse_training_curves(
 def training_curve_figure(curves: list[dict[str, object]]):
     import matplotlib.pyplot as plt
 
-    fig, axis_loss = plt.subplots(figsize=(10, 4.2), facecolor="white")
-    axis_delta = axis_loss.twinx()
+    # 왼쪽: 학습 loss, 오른쪽: result.log의 에폭별 검증 정확도 (축을 겹치지 않게 분리)
+    fig, (axis_loss, axis_acc) = plt.subplots(1, 2, figsize=(11, 4), facecolor="white")
     colors = ["#4f46e5", "#059669"]
+    has_val = False
     for index, curve in enumerate(curves):
         epochs = curve["epochs"]
         losses = curve["losses"]
@@ -494,47 +500,73 @@ def training_curve_figure(curves: list[dict[str, object]]):
             epochs,
             losses,
             color=color,
-            marker="o",
-            markersize=5,
-            linewidth=2.2,
-            label=f"Loss · {curve['label']}",
+            marker="o" if len(epochs) <= 20 else None,
+            markersize=4,
+            linewidth=2,
+            label=str(curve["label"]),
         )
-        if len(losses) > 1:
-            delta_percent = [
-                100 * (current - previous) / previous if previous else 0.0
-                for previous, current in zip(losses, losses[1:], strict=False)
-            ]
-            axis_delta.plot(
-                epochs[1:],
-                delta_percent,
-                color=color,
-                marker="x",
-                markersize=5,
-                linewidth=1.5,
-                linestyle="--",
-                alpha=0.72,
-                label=f"Δ loss (%) · {curve['label']}",
+        val_accs = curve.get("val_accs")
+        if isinstance(val_accs, list) and val_accs:
+            has_val = True
+            axis_acc.plot(epochs, val_accs, color=color, linewidth=1.6, alpha=.85)
+            best_index = max(range(len(val_accs)), key=val_accs.__getitem__)
+            axis_acc.scatter(
+                [epochs[best_index]], [val_accs[best_index]], color="#d97706", zorder=3, s=40
             )
-    axis_loss.set_xlabel("Epoch", color="#475569")
-    axis_loss.set_ylabel("Training loss", color="#475569")
-    axis_delta.set_ylabel("Epoch-to-epoch Δ loss (%)", color="#64748b")
-    axis_loss.set_facecolor("white")
-    axis_loss.grid(axis="y", color="#e2e8f0", linewidth=.8)
-    axis_loss.spines["top"].set_visible(False)
-    axis_delta.spines["top"].set_visible(False)
-    axis_loss.tick_params(colors="#64748b")
-    axis_delta.tick_params(colors="#64748b")
-    handles_left, labels_left = axis_loss.get_legend_handles_labels()
-    handles_right, labels_right = axis_delta.get_legend_handles_labels()
-    axis_loss.legend(
-        handles_left + handles_right,
-        labels_left + labels_right,
-        loc="upper right",
-        frameon=False,
-        fontsize=8,
-    )
+            # 곡선 위에 겹치지 않도록 축 오른쪽 아래 빈 공간에 표시
+            axis_acc.text(
+                .98, .06,
+                f"best {val_accs[best_index]:.1f}% @ epoch {epochs[best_index]}",
+                transform=axis_acc.transAxes,
+                ha="right",
+                fontsize=9,
+                color="#92400e",
+            )
+    axis_loss.set_title("Training loss", fontsize=10, color="#0f172a", loc="left")
+    axis_acc.set_title("Validation accuracy (%)", fontsize=10, color="#0f172a", loc="left")
+    if not has_val:
+        axis_acc.text(
+            .5, .5, "no val acc in log", ha="center", va="center",
+            transform=axis_acc.transAxes, color="#94a3b8",
+        )
+    for axis in (axis_loss, axis_acc):
+        axis.set_xlabel("Epoch", color="#475569")
+        axis.set_facecolor("white")
+        axis.grid(axis="y", color="#e2e8f0", linewidth=.8)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        axis.tick_params(colors="#64748b", labelsize=8)
+    axis_loss.legend(loc="upper right", frameon=False, fontsize=8)
     fig.tight_layout()
     return fig
+
+
+def process_figure(steps: list[dict[str, object]]):
+    import matplotlib.pyplot as plt
+
+    labels = [str(step["name"]).replace(" 시도", "").replace("차", "") for step in steps]
+    values = [float(step["test"]) for step in steps]  # type: ignore[arg-type]
+    fig, axis = plt.subplots(figsize=(11, 3.6), facecolor="white")
+    best = max(range(len(values)), key=values.__getitem__)
+    colors = ["#4f46e5" if index == best else "#c7d2fe" for index in range(len(values))]
+    bars = axis.bar(labels, values, color=colors, width=.62)
+    for bar, value in zip(bars, values, strict=True):
+        axis.text(
+            bar.get_x() + bar.get_width() / 2, value + .3, f"{value:.1f}",
+            ha="center", va="bottom", fontsize=8, color="#334155",
+        )
+    # 정확도 차이가 보이도록 세로축을 최솟값 근처부터 시작 (아래 캡션에 명시)
+    lower = max(0.0, (min(values) // 5) * 5 - 5)
+    axis.set_ylim(lower, 100)
+    axis.set_xlabel("Attempt", color="#475569")
+    axis.set_ylabel("Test accuracy (%)", color="#475569")
+    axis.grid(axis="y", color="#e2e8f0", linewidth=.8)
+    axis.set_axisbelow(True)
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.tick_params(colors="#64748b", labelsize=8)
+    fig.tight_layout()
+    return fig, lower
 
 
 def count_dataset_images(root: Path) -> int:
@@ -1465,7 +1497,7 @@ with tab_bench:
 with tab_loss:
     st.markdown(
         '<div class="step-title"><span class="step-index">L</span>학습 곡선 · epoch별 loss 변화</div>'
-        '<p class="tab-intro">result.log에 기록된 최신 학습과 tune.log의 최고 정확도 스윕을 함께 표시합니다. 실선은 loss, 점선·× 마커는 직전 epoch 대비 Δ loss(%)입니다.</p>',
+        '<p class="tab-intro">result.log에 기록된 최신 학습과 tune.log의 최고 정확도 스윕을 함께 표시합니다. 왼쪽은 학습 loss, 오른쪽은 result.log의 에폭별 검증 정확도입니다.</p>',
         unsafe_allow_html=True,
     )
     st.caption(
@@ -1474,10 +1506,7 @@ with tab_loss:
     )
     if training_curves:
         st.pyplot(training_curve_figure(training_curves), width="stretch")
-        st.caption(
-            "변화율 계산: (현재 epoch loss − 이전 epoch loss) ÷ 이전 epoch loss × 100. "
-            "음수는 loss 감소, 양수는 증가를 뜻합니다."
-        )
+        st.caption("주황 점은 검증 정확도가 가장 높았던 에폭(저장된 체크포인트)입니다.")
         if latest_readme_experiment is not None and latest_readme_pair is not None:
             for curve in training_curves:
                 curve_label = str(curve["label"])
@@ -1545,19 +1574,9 @@ with tab_process:
             f"{last['test']:.1f}%",
             f"{last['test'] - first['test']:+.1f}%p",
         )
-        st.bar_chart(
-            {
-                # 문자열 축은 사전순으로 정렬되므로 '01차' 형태로 맞춤
-                "시도": [
-                    re.sub(r"^(\d+)차.*", lambda m: f"{int(m.group(1)):02d}차", step["name"])
-                    for step in process_steps
-                ],
-                "테스트 정확도(%)": [step["test"] for step in process_steps],
-            },
-            x="시도",
-            y="테스트 정확도(%)",
-            height=260,
-        )
+        process_chart, axis_floor = process_figure(process_steps)
+        st.pyplot(process_chart, width="stretch")
+        st.caption(f"시도별 테스트 정확도 · 세로축은 {axis_floor:.0f}%부터 · 진한 막대가 최고 기록")
         previous_test: float | None = None
         for step in process_steps:
             change = (
